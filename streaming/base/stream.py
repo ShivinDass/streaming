@@ -18,7 +18,6 @@ from streaming.base.constant import TICK
 from streaming.base.distributed import barrier, get_local_rank
 from streaming.base.format import FileInfo, Reader, get_index_basename, reader_from_json
 from streaming.base.hashing import get_hash
-from streaming.base.registry_utils import create_registry
 from streaming.base.storage import CloudDownloader
 from streaming.base.util import retry, wait_for_file_to_exist
 from streaming.base.world import World
@@ -425,7 +424,10 @@ class Stream:
             delta += self._prepare_shard_part(raw_info, zip_info, shard.compression)
         return delta
 
-    def get_shards(self, world: World, allow_unsafe_types: bool) -> list[Reader]:
+    def get_shards(self,
+                   world: World,
+                   allow_unsafe_types: bool,
+                   index_filename: str) -> list[Reader]:
         """Load this Stream's index, retrieving its shard readers.
 
         Args:
@@ -438,8 +440,11 @@ class Stream:
             `List[Reader]: Shard readers.
         """
         # Download the index file if it does not exist locally.
-        basename = get_index_basename()
-        filename = os.path.join(self.local, self.split, basename)  # pyright: ignore
+        if index_filename == '':
+            basename = get_index_basename()
+            filename = os.path.join(self.local, self.split, basename)  # pyright: ignore
+        else:
+            filename = index_filename
         if not os.path.exists(filename):
             if world.is_local_leader:
                 if self.remote:
@@ -454,24 +459,22 @@ class Stream:
                         raise RuntimeError(f'No `remote` provided, but local file {filename} ' +
                                            'does not exist either')
             else:
-                index_file = os.path.join(self.remote or '', self.split or '', basename)
                 wait_for_file_to_exist(
-                    filename, TICK, self.download_timeout, f'Index file {index_file} ' +
+                    filename, TICK, self.download_timeout,
+                    f'Index file {os.path.join(self.remote or "", self.split or "", basename)} ' +
                     f'-> {filename} took too long to download or failed to download. Either increase the '
                     + f'`download_timeout` value or check the local rank 0 traceback.')
 
         # Load the index.
         try:
-            with open(filename) as f:
-                obj = json.load(f)
+            obj = json.load(open(filename))
         except json.decoder.JSONDecodeError as error:
             error.args = (f'Index file at {filename} is empty or corrupted. ' + error.args[0],)
             raise error
 
         # Version check.
-        obj_version = obj['version']
-        if obj_version != 2:
-            raise ValueError(f'Unsupported streaming data version: {obj_version}. ' +
+        if obj['version'] != 2:
+            raise ValueError(f'Unsupported streaming data version: {obj["version"]}. ' +
                              f'Expected version 2.')
 
         # Initialize shard readers according to the loaded info.
@@ -510,13 +513,3 @@ class Stream:
         """
         filename = os.path.join(self.local, self.split, get_index_basename())
         return os.stat(filename).st_size
-
-
-streams_registry = create_registry(
-    'streaming',
-    'streams_registry',
-    generic_type=type[Stream],
-    entry_points=True,
-    description='The streams registry is used for registering Stream classes.')
-
-streams_registry.register('stream', func=Stream)

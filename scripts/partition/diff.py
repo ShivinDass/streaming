@@ -105,8 +105,9 @@ def main(args: Namespace) -> None:
                                 try:
                                     assert (ids == ids2).all()
                                 except Exception as e:
-                                    err_str = ' '.join(str(e).split())
-                                    print(f'Error: c{c} p{p} r{r} w{w} b{b} n{n} {err_str}')
+                                    print(
+                                        f'Error: c{c} p{p} r{r} w{w} b{b} n{n} {" ".join(str(e).split())}'
+                                    )
                                     raise
                                 pbar.update()
     t = sum(tt) / len(tt)

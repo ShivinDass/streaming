@@ -15,6 +15,8 @@ from math import ceil
 from tempfile import gettempdir
 from threading import Event, Lock
 from time import sleep, time_ns
+from datetime import datetime
+from typing import Any, Dict, Iterator, Optional, Sequence, Tuple, Union
 from typing import Any, Iterator, Optional, Sequence, Union
 
 import numpy as np
@@ -30,12 +32,11 @@ from streaming.base.constant import (BARRIER, BARRIER_FILELOCK, CACHE_FILELOCK, 
                                      SHARD_ACCESS_TIMES, SHARD_STATES, TICK)
 from streaming.base.distributed import maybe_init_dist
 from streaming.base.format import get_index_basename
-from streaming.base.registry_utils import construct_from_registry
 from streaming.base.sampling import get_sampling
 from streaming.base.shared import (SharedArray, SharedBarrier, SharedMemory, SharedScalar,
                                    _get_path, get_shm_prefix)
 from streaming.base.spanner import Spanner
-from streaming.base.stream import Stream, streams_registry
+from streaming.base.stream import Stream
 from streaming.base.util import bytes_to_int, number_abbrev_to_int
 from streaming.base.world import World
 
@@ -309,9 +310,6 @@ class StreamingDataset(Array, IterableDataset):
         replication (int, optional): Determines how many consecutive devices will receive the same
             samples. Useful for training with tensor or sequence parallelism, where multiple
             devices need to see the same partition of the dataset. Defaults to ``None``.
-        stream_name (str): The name of the Stream to use which is registered in streams_registry.
-            Defaults to ``stream``.
-        stream_config (dict[str, Any]): Additional arguments to pass to the Stream constructor.
     """
 
     def __init__(self,
@@ -339,8 +337,7 @@ class StreamingDataset(Array, IterableDataset):
                  batching_method: str = 'random',
                  allow_unsafe_types: bool = False,
                  replication: Optional[int] = None,
-                 stream_name: str = 'stream',
-                 stream_config: Optional[dict[str, Any]] = None) -> None:
+                 index_filename: str = '') -> None:
         # Global arguments (which do not live in Streams).
         self.predownload = predownload
         self.cache_limit = cache_limit
@@ -444,27 +441,13 @@ class StreamingDataset(Array, IterableDataset):
             for stream in streams:
                 stream.apply_default(default)
         else:
-            stream_config = stream_config or {}
-            stream_config.update({
-                'remote': remote,
-                'local': local,
-                'split': split,
-                'download_retry': download_retry,
-                'download_timeout': download_timeout,
-                'validate_hash': validate_hash,
-                'keep_zip': keep_zip,
-            })
-
-            # Construct a Stream instance using registry-based construction
-            default = construct_from_registry(
-                name=stream_name,
-                registry=streams_registry,
-                partial_function=False,
-                pre_validation_function=None,
-                post_validation_function=None,
-                kwargs=stream_config,
-            )
-
+            default = Stream(remote=remote,
+                             local=local,
+                             split=split,
+                             download_retry=download_retry,
+                             download_timeout=download_timeout,
+                             validate_hash=validate_hash,
+                             keep_zip=keep_zip)
             streams = [default]
 
         # Validate the stream weighting scheme (relative or absolute) to catch errors before we go
@@ -483,11 +466,16 @@ class StreamingDataset(Array, IterableDataset):
         self.shards_per_stream = np.zeros(self.num_streams, np.int64)
         self.sample_offset_per_stream = np.zeros(self.num_streams, np.int64)
         self.samples_per_stream = np.zeros(self.num_streams, np.int64)
+
+
         for stream_id, stream in enumerate(self.streams):
-            stream_shards = stream.get_shards(self._unique_rank_world, self.allow_unsafe_types)
+            if index_filename != '':
+                index_filename = os.path.join(stream.local, stream.split, index_filename)
+            # else:
+            #     index_filename = os.path.join(stream.local, stream.split, get_index_basename())
+            stream_shards = stream.get_shards(self._unique_rank_world, self.allow_unsafe_types, index_filename)
             num_stream_samples = sum(map(len, stream_shards))
             if not num_stream_samples:
-                index_filename = os.path.join(stream.local, stream.split, get_index_basename())
                 raise RuntimeError(f'Stream contains no samples: {index_filename}.')
             stream_per_shard += [stream_id] * len(stream_shards)
             self.shard_offset_per_stream[stream_id] = len(self.shards)
@@ -540,7 +528,12 @@ class StreamingDataset(Array, IterableDataset):
         ]
         self._shm_prefix_int, self._locals_shm = get_shm_prefix(streams_local, streams_remote,
                                                                 self._unique_rank_world)
-        self._filelock_root = gettempdir()
+        _USER = os.environ.get('USER', '')
+        _RUN_ID = os.environ.get('RUN_ID', '')
+        self._filelock_root = os.path.join(os.path.sep, 'tmp', _USER, _RUN_ID, 'streaming')
+
+                                                                # self._unique_rank_world)
+        # self._filelock_root = gettempdir()
         os.makedirs(self._filelock_root, exist_ok=True)
 
         # Create the shared memory-backed barrier, without its lock, which is unpickleable.
