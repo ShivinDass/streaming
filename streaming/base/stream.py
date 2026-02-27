@@ -99,10 +99,12 @@ class Stream:
                  download_retry: Optional[int] = None,
                  download_timeout: Optional[float] = None,
                  validate_hash: Optional[str] = None,
-                 keep_zip: Optional[bool] = None) -> None:
+                 keep_zip: Optional[bool] = None,
+                 index_filename='') -> None:
         self.remote = remote
         self._local = local
         self.split = split or ''
+        self.index_filename = index_filename
 
         has_proportion = proportion is not None
         has_repeat = repeat is not None
@@ -245,10 +247,12 @@ class Stream:
         # Derive weights.
         if are_weights_relative:
             # Relative.
-            if not choose_per_epoch:
-                choose_per_epoch = sum(samples_per_stream)
             proportion_per_stream = np.array([stream.proportion for stream in streams], np.float64)
             proportion_per_stream /= proportion_per_stream.sum()
+            # change the logic here so that each dataset is repeated at least once in it's entirety
+            if not choose_per_epoch:
+                # choose_per_epoch = sum(samples_per_stream)
+                choose_per_epoch = int(np.max(samples_per_stream/proportion_per_stream))
             choose_per_stream = (choose_per_epoch * proportion_per_stream).astype(np.int64)
             shortfall = choose_per_epoch - choose_per_stream.sum()
             rng = np.random.default_rng(seed)

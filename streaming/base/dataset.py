@@ -447,7 +447,8 @@ class StreamingDataset(Array, IterableDataset):
                              download_retry=download_retry,
                              download_timeout=download_timeout,
                              validate_hash=validate_hash,
-                             keep_zip=keep_zip)
+                             keep_zip=keep_zip,
+                             index_filename=index_filename)
             streams = [default]
 
         # Validate the stream weighting scheme (relative or absolute) to catch errors before we go
@@ -469,8 +470,9 @@ class StreamingDataset(Array, IterableDataset):
 
 
         for stream_id, stream in enumerate(self.streams):
-            if index_filename != '':
-                index_filename = os.path.join(stream.local, stream.split, index_filename)
+            if stream.index_filename != '':
+                index_filename = os.path.join(stream.local, stream.split, stream.index_filename)
+                print('==> Index Filename', index_filename)
             # else:
             #     index_filename = os.path.join(stream.local, stream.split, get_index_basename())
             stream_shards = stream.get_shards(self._unique_rank_world, self.allow_unsafe_types, index_filename)
